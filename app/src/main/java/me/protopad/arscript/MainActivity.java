@@ -19,6 +19,7 @@ import com.google.atap.tangoservice.TangoEvent;
 import com.google.atap.tangoservice.TangoOutOfDateException;
 import com.google.atap.tangoservice.TangoPoseData;
 import com.google.atap.tangoservice.TangoXyzIjData;
+import com.google.gson.Gson;
 
 import org.java_websocket.server.WebSocketServer;
 
@@ -35,6 +36,7 @@ public class MainActivity extends ActionBarActivity {
     private Tango mTango;
     private TangoConfig mConfig;
     private boolean mIsTangoServiceConnected;
+    private Gson gson;
 
 
     DataSocketServer mServer;
@@ -44,6 +46,7 @@ public class MainActivity extends ActionBarActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        gson = new Gson();
         // Instantiate Tango client
         mTango = new Tango(this);
 
@@ -167,17 +170,20 @@ public class MainActivity extends ActionBarActivity {
                 // Output to LogCat
                 String logMsg = translationMsg + " | " + rotationMsg;
                 Log.i(TAG, logMsg);
+                String jsonPose = gson.toJson(pose);
 
                 // Send data to browser
                 if(mServer.currConn != null)
-                    mServer.currConn.send(logMsg);
+                    mServer.currConn.send(jsonPose);
 
             }
 
             @Override
             public void onXyzIjAvailable(TangoXyzIjData arg0) {
                 Log.i(TAG, "Xyz Available");
-                // Send over socket
+                String jsonXYZ = gson.toJson(arg0);
+                if(mServer.currConn != null)
+                    mServer.currConn.send(jsonXYZ);
             }
 
             @Override
