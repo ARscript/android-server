@@ -52,6 +52,7 @@ public class MainActivity extends ActionBarActivity {
         // like: mConfig.putBoolean(TangoConfig.KEY_BOOLEAN_DEPTH, true)
         mConfig = new TangoConfig();
         mConfig = mTango.getConfig(TangoConfig.CONFIG_TYPE_CURRENT);
+        mConfig.putBoolean(TangoConfig.KEY_BOOLEAN_DEPTH, true);
         mConfig.putBoolean(TangoConfig.KEY_BOOLEAN_MOTIONTRACKING, true);
 
         Button start = (Button)  findViewById(R.id.start);
@@ -175,7 +176,8 @@ public class MainActivity extends ActionBarActivity {
 
             @Override
             public void onXyzIjAvailable(TangoXyzIjData arg0) {
-                // Ignoring XyzIj data
+                Log.i(TAG, "Xyz Available");
+                // Send over socket
             }
 
             @Override
