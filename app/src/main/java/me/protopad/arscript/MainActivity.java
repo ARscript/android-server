@@ -1,7 +1,9 @@
 package me.protopad.arscript;
 
-import android.annotation.SuppressLint;
+import android.app.NotificationManager;
+import android.content.Context;
 import android.content.Intent;
+import android.support.v4.app.NotificationCompat;
 import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -21,10 +23,14 @@ import com.google.atap.tangoservice.TangoPoseData;
 import com.google.atap.tangoservice.TangoXyzIjData;
 import com.google.gson.Gson;
 
-import org.java_websocket.server.WebSocketServer;
 
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+
+import me.protopad.arscript.models.Pose;
+import me.protopad.arscript.models.XyzIj;
 
 
 public class MainActivity extends ActionBarActivity {
@@ -32,14 +38,24 @@ public class MainActivity extends ActionBarActivity {
     private static final String sTranslationFormat = "Translation: %f, %f, %f";
     private static final String sRotationFormat = "Rotation: %f, %f, %f, %f";
 
-
+    private static int SECS_TO_MILLI = 1000;
     private Tango mTango;
     private TangoConfig mConfig;
     private boolean mIsTangoServiceConnected;
     private Gson gson;
 
-
     DataSocketServer mServer;
+
+    private int count;
+    private int mPreviousPoseStatus;
+    private float mDeltaTime;
+    private float mPosePreviousTimeStamp;
+    private float mXyIjPreviousTimeStamp;
+    private float mCurrentTimeStamp;
+    private String mServiceVersion;
+    NotificationManager mNotificationManager;
+
+    int mId = 1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -58,6 +74,8 @@ public class MainActivity extends ActionBarActivity {
         mConfig.putBoolean(TangoConfig.KEY_BOOLEAN_DEPTH, true);
         mConfig.putBoolean(TangoConfig.KEY_BOOLEAN_MOTIONTRACKING, true);
 
+       mNotificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+
         Button start = (Button)  findViewById(R.id.start);
         Button end = (Button)  findViewById(R.id.stop);
 
@@ -69,6 +87,14 @@ public class MainActivity extends ActionBarActivity {
                         Tango.getRequestPermissionIntent(Tango.PERMISSIONTYPE_MOTION_TRACKING),
                         Tango.TANGO_INTENT_ACTIVITYCODE);
                 }
+
+                NotificationCompat.Builder mBuilder =
+                        new NotificationCompat.Builder(getApplicationContext())
+                                .setSmallIcon(R.drawable.ic_launcher)
+                                .setContentTitle("ARscript")
+                                .setContentText("Service Running.")
+                                .setOngoing(true);
+                mNotificationManager.notify(mId, mBuilder.build());
             }
         });
 
@@ -81,6 +107,14 @@ public class MainActivity extends ActionBarActivity {
                 } catch (TangoErrorException e) {
                     Toast.makeText(getApplicationContext(), "Tango Error!",
                             Toast.LENGTH_SHORT).show();
+                }
+                mNotificationManager.cancel(mId);
+                try {
+                    mServer.stop();
+                } catch (InterruptedException e) {
+                    Log.wtf(TAG, "Failed to stop server, Interrupted");
+                } catch (IOException e) {
+                    Log.wtf(TAG, "Failed to stop server, IO");
                 }
             }
         });
@@ -134,9 +168,30 @@ public class MainActivity extends ActionBarActivity {
         super.onDestroy();
     }
 
+    private void SetUpExtrinsics() {
+        // Set device to imu matrix in Model Matrix Calculator.
+        TangoPoseData device2IMUPose = new TangoPoseData();
+        TangoCoordinateFramePair framePair = new TangoCoordinateFramePair();
+        framePair.baseFrame = TangoPoseData.COORDINATE_FRAME_IMU;
+        framePair.targetFrame = TangoPoseData.COORDINATE_FRAME_DEVICE;
+        try {
+            device2IMUPose = mTango.getPoseAtTime(0.0, framePair);
+        } catch (TangoErrorException e) {
+            Toast.makeText(getApplicationContext(), R.string.TangoError,
+                    Toast.LENGTH_SHORT).show();
+        }
+
+
+        // TODO: send extrinsics over socket
+    }
+
+
+    // set up intrinsics?
+
+
     private void setTangoListeners() {
         // Select coordinate frame pairs
-        ArrayList<TangoCoordinateFramePair> framePairs = new ArrayList<TangoCoordinateFramePair>();
+        final ArrayList<TangoCoordinateFramePair> framePairs = new ArrayList<TangoCoordinateFramePair>();
         framePairs.add(new TangoCoordinateFramePair(
                 TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
                 TangoPoseData.COORDINATE_FRAME_DEVICE));
@@ -156,40 +211,77 @@ public class MainActivity extends ActionBarActivity {
         // Add a listener for Tango pose data
         mTango.connectListener(framePairs, new Tango.OnTangoUpdateListener() {
 
-            @SuppressLint("DefaultLocale")
             @Override
             public void onPoseAvailable(TangoPoseData pose) {
-                // Format Translation and Rotation data
-                final String translationMsg = String.format(sTranslationFormat,
-                        pose.translation[0], pose.translation[1],
-                        pose.translation[2]);
-                final String rotationMsg = String.format(sRotationFormat,
-                        pose.rotation[0], pose.rotation[1], pose.rotation[2],
-                        pose.rotation[3]);
+                // pose -> json
+                mDeltaTime = (float) (pose.timestamp - mPosePreviousTimeStamp)
+                        * SECS_TO_MILLI;
+                mPosePreviousTimeStamp = (float) pose.timestamp;
+                if(mPreviousPoseStatus != pose.statusCode){
+                    count = 0;
+                }
+                count++;
+                mPreviousPoseStatus = pose.statusCode;
 
-                // Output to LogCat
-                String logMsg = translationMsg + " | " + rotationMsg;
-                Log.i(TAG, logMsg);
-                String jsonPose = gson.toJson(pose);
+                float[] translation = pose.getTranslationAsFloats();
+                float[] rotation = pose.getRotationAsFloats();
+                Pose p = new Pose(translation, rotation);
 
-                // Send data to browser
-                if(mServer.currConn != null)
-                    mServer.currConn.send(jsonPose);
+                String poseJson = gson.toJson(p);
+
+                Log.i(TAG, poseJson);
+
+                if(mServer.currConn.isOpen())
+                    mServer.currConn.send(poseJson);
 
             }
 
             @Override
-            public void onXyzIjAvailable(TangoXyzIjData arg0) {
-                Log.i(TAG, "Xyz Available");
-                String jsonXYZ = gson.toJson(arg0);
-                if(mServer.currConn != null)
-                    mServer.currConn.send(jsonXYZ);
+            public void onXyzIjAvailable(TangoXyzIjData xyzIj) {
+                // XYZij -> json
+                // TODO: send ij data over socket
+                mCurrentTimeStamp = (float) xyzIj.timestamp;
+                final float frameDelta = (mCurrentTimeStamp - mXyIjPreviousTimeStamp)
+                        * SECS_TO_MILLI;
+                mXyIjPreviousTimeStamp = mCurrentTimeStamp;
+                byte[] buffer = new byte[xyzIj.xyzCount * 3 * 4];
+                FileInputStream fileStream = new FileInputStream(
+                        xyzIj.xyzParcelFileDescriptor.getFileDescriptor());
+                try {
+                    fileStream.read(buffer,
+                            xyzIj.xyzParcelFileDescriptorOffset, buffer.length);
+                    fileStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+
+                // send buffer, count, poseAtTime
+                TangoPoseData pointCloudPose = mTango.getPoseAtTime(
+                        mCurrentTimeStamp, framePairs.get(0));
+
+                Pose p = new Pose(pointCloudPose.getTranslationAsFloats(), pointCloudPose.getRotationAsFloats());
+                XyzIj x = new XyzIj(xyzIj.xyzCount ,buffer, p);
+
+
+                String xyzJson = gson.toJson(x);
+
+                Log.i(TAG, xyzJson);
+
+                if(mServer.currConn.isOpen())
+                    mServer.currConn.send(xyzJson);
             }
 
             @Override
-            public void onTangoEvent(TangoEvent arg0) {
-                // Ignoring TangoEvents
+            public void onTangoEvent(TangoEvent event) {
+                // send tango event
+                String eventJson = gson.toJson(event);
+
+                Log.i(TAG, eventJson);
+                // Add this back later
+                //if(mServer.currConn.isOpen())
+                //    mServer.currConn.send(eventJson);
             }
+
 
         });
     }
